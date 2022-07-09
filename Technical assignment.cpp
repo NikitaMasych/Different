@@ -4,8 +4,9 @@
 #include <vector>
 #include <Windows.h>
 
-
 #define MakePtr( cast, ptr, addValue ) (cast)( (DWORD)(ptr) + (DWORD)(addValue))
+#define GetImgDirEntryRVA( pNTHdr, IDE ) \
+	(pNTHdr->OptionalHeader.DataDirectory[IDE].VirtualAddress)
 
 void getFile(std::ifstream& file, std::string& file_name, const std::string& extension) {
 	/* Asks for the path to the file and opens it in binary mode*/
@@ -37,30 +38,97 @@ double calculateEntropy(std::ifstream& file) {
 	return entropy / 8.0; // because we must have been taking the log with 256 base
 }
 
-void DumpLibFile(LPVOID lpFileBase, std::vector<std::string>& result)
+PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(DWORD rva,
+	PIMAGE_NT_HEADERS pNTHeader)
 {
-	
-	PIMAGE_ARCHIVE_MEMBER_HEADER pArchHeader;
+	PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(pNTHeader);
+	unsigned i;
 
-	pArchHeader = MakePtr(PIMAGE_ARCHIVE_MEMBER_HEADER, lpFileBase,
-		IMAGE_ARCHIVE_START_SIZE);
-
-	while (pArchHeader){
-		DWORD thisMemberSize;
-		
-		result.emplace_back(std::string(reinterpret_cast<char*>(pArchHeader->Name)));
-
-		// Calculate how big this member is 
-		
-		thisMemberSize = atoi((char*)pArchHeader->Size)
-			+ IMAGE_SIZEOF_ARCHIVE_MEMBER_HDR;
-
-		thisMemberSize = (thisMemberSize + 1) & ~1;   // Round up
-
-		// Get a pointer to the next archive member
-		pArchHeader = MakePtr(PIMAGE_ARCHIVE_MEMBER_HEADER, pArchHeader,
-			thisMemberSize);
+	for (i = 0; i < pNTHeader->FileHeader.NumberOfSections; i++, section++)
+	{
+		// Is the RVA within this section?
+		if ((rva >= section->VirtualAddress) &&
+			(rva < (section->VirtualAddress + section->Misc.VirtualSize)))
+			return section;
 	}
+
+	return 0;
+}
+
+LPVOID GetPtrFromRVA(DWORD rva, PIMAGE_NT_HEADERS pNTHeader, DWORD imageBase){
+	PIMAGE_SECTION_HEADER pSectionHdr;
+	INT delta;
+
+	pSectionHdr = GetEnclosingSectionHeader(rva, pNTHeader);
+	if (!pSectionHdr)
+		return 0;
+
+	delta = (INT)(pSectionHdr->VirtualAddress - pSectionHdr->PointerToRawData);
+	return (PVOID)(imageBase + rva - delta);
+}
+
+void DumpImportsSection(DWORD base, PIMAGE_NT_HEADERS pNTHeader,
+						std::vector<std::string>& result){
+	PIMAGE_IMPORT_DESCRIPTOR importDesc;
+	PIMAGE_SECTION_HEADER pSection;
+	PIMAGE_THUNK_DATA thunk, thunkIAT = 0;
+	PIMAGE_IMPORT_BY_NAME pOrdinalName;
+	DWORD importsStartRVA;
+	PSTR pszTimeDate;
+
+	// Look up where the imports section is (normally in the .idata section)
+	// but not necessarily so.  Therefore, grab the RVA from the data dir.
+	importsStartRVA = GetImgDirEntryRVA(pNTHeader, IMAGE_DIRECTORY_ENTRY_IMPORT);
+	if (!importsStartRVA)
+		return;
+
+	// Get the IMAGE_SECTION_HEADER that contains the imports.  This is
+	// usually the .idata section, but doesn't have to be.
+	pSection = GetEnclosingSectionHeader(importsStartRVA, pNTHeader);
+	if (!pSection)
+		return;
+
+	importDesc = (PIMAGE_IMPORT_DESCRIPTOR)
+		GetPtrFromRVA(importsStartRVA, pNTHeader, base);
+	if (!importDesc)
+		return;
+
+	while (1)
+	{
+		// See if we've reached an empty IMAGE_IMPORT_DESCRIPTOR
+		if ((importDesc->TimeDateStamp == 0) && (importDesc->Name == 0))
+			break;
+		// POTENTIAL PROBLEM:
+		result.emplace_back(std::string(reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base))));
+
+		importDesc++;   // advance to next IMAGE_IMPORT_DESCRIPTOR
+	}
+}
+
+void DumpExeFile(PIMAGE_DOS_HEADER dosHeader, std::vector<std::string>& result){
+	PIMAGE_NT_HEADERS pNTHeader;
+	DWORD base = (DWORD)dosHeader;
+	std::cout << dosHeader->e_lfanew;
+	pNTHeader = MakePtr(PIMAGE_NT_HEADERS, dosHeader,
+		dosHeader->e_lfanew);
+	
+	//std::cout << pNTHeader->Signature;
+	// First, verify that the e_lfanew field gave us a reasonable
+	// pointer, then verify the PE signature.
+	__try
+	{
+		if (pNTHeader->Signature != IMAGE_NT_SIGNATURE)
+		{
+			std::cout << "Not a Portable Executable (PE) EXE\n";
+			return;
+		}
+	}
+	__except (TRUE)    // Should only get here if pNTHeader (above) is bogus
+	{
+		std::cout << "Invalid .EXE!\n";
+		return;
+	}
+	DumpImportsSection(base, pNTHeader, result);
 }
 
 void getAllDLLS(std::string file_name, std::vector<std::string> result) {
@@ -96,17 +164,11 @@ void getAllDLLS(std::string file_name, std::vector<std::string> result) {
 		std::cout << "Couldn't map view of file with MapViewOfFile()!\n";
 		return;
 	}
-	std::cout << (char*)(lpFileBase) << '\n';
-	std::cout << IMAGE_ARCHIVE_START;
-	
-	if (0 == strncmp((char*)(lpFileBase), IMAGE_ARCHIVE_START,
-		IMAGE_ARCHIVE_START_SIZE))
-	{
-		DumpLibFile(lpFileBase, result);
-	}
-	else
-		std::cout << "Unrecognized file format!\n";
 
+	dosHeader = static_cast<PIMAGE_DOS_HEADER>(lpFileBase);
+
+	if (dosHeader->e_magic == IMAGE_DOS_SIGNATURE) DumpExeFile(dosHeader, result);
+	
 	UnmapViewOfFile(lpFileBase);
 	CloseHandle(hFileMapping);
 	CloseHandle(hFile);
@@ -121,10 +183,10 @@ int main() {
 	double ico_entropy = calculateEntropy(file_ico);
 	
 	std::cout << exe_entropy << '\n';
-	std::cout << ico_entropy;
+	std::cout << ico_entropy << '\n';
 	
 	std::vector<std::string> dlls;  getAllDLLS(file_exe_name, dlls);
-	for (auto dll : dlls) {
+	for (auto& dll : dlls) {
 		std::cout << dll;
 	}
 	
