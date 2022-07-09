@@ -4,9 +4,9 @@
 #include <vector>
 #include <Windows.h>
 
-#define MakePtr( cast, ptr, addValue ) (cast)( (DWORD)(ptr) + (DWORD)(addValue))
-#define GetImgDirEntryRVA( pNTHdr, IDE ) \
-	(pNTHdr->OptionalHeader.DataDirectory[IDE].VirtualAddress)
+#pragma hdrstop
+
+#define MakePtr( cast, ptr, addValue ) (cast)( (long long)(ptr) + (long long)(addValue))
 
 void getFile(std::ifstream& file, std::string& file_name, const std::string& extension) {
 	/* Asks for the path to the file and opens it in binary mode*/
@@ -38,7 +38,7 @@ double calculateEntropy(std::ifstream& file) {
 	return entropy / 8.0; // because we must have been taking the log with 256 base
 }
 
-PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(DWORD rva,
+PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(long long rva,
 	PIMAGE_NT_HEADERS pNTHeader)
 {
 	PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(pNTHeader);
@@ -55,7 +55,7 @@ PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(DWORD rva,
 	return 0;
 }
 
-LPVOID GetPtrFromRVA(DWORD rva, PIMAGE_NT_HEADERS pNTHeader, DWORD imageBase){
+LPVOID GetPtrFromRVA(long long rva, PIMAGE_NT_HEADERS pNTHeader, long long imageBase){
 	PIMAGE_SECTION_HEADER pSectionHdr;
 	INT delta;
 
@@ -67,18 +67,17 @@ LPVOID GetPtrFromRVA(DWORD rva, PIMAGE_NT_HEADERS pNTHeader, DWORD imageBase){
 	return (PVOID)(imageBase + rva - delta);
 }
 
-void DumpImportsSection(DWORD base, PIMAGE_NT_HEADERS pNTHeader,
+void DumpImportsSection(long long base, PIMAGE_NT_HEADERS pNTHeader,
 						std::vector<std::string>& result){
 	PIMAGE_IMPORT_DESCRIPTOR importDesc;
 	PIMAGE_SECTION_HEADER pSection;
-	PIMAGE_THUNK_DATA thunk, thunkIAT = 0;
-	PIMAGE_IMPORT_BY_NAME pOrdinalName;
-	DWORD importsStartRVA;
+	long long importsStartRVA;
 	PSTR pszTimeDate;
 
 	// Look up where the imports section is (normally in the .idata section)
 	// but not necessarily so.  Therefore, grab the RVA from the data dir.
-	importsStartRVA = GetImgDirEntryRVA(pNTHeader, IMAGE_DIRECTORY_ENTRY_IMPORT);
+	
+	importsStartRVA = pNTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
 	if (!importsStartRVA)
 		return;
 
@@ -99,6 +98,7 @@ void DumpImportsSection(DWORD base, PIMAGE_NT_HEADERS pNTHeader,
 		if ((importDesc->TimeDateStamp == 0) && (importDesc->Name == 0))
 			break;
 		// POTENTIAL PROBLEM:
+		std::cout << reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base));
 		result.emplace_back(std::string(reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base))));
 
 		importDesc++;   // advance to next IMAGE_IMPORT_DESCRIPTOR
@@ -107,31 +107,27 @@ void DumpImportsSection(DWORD base, PIMAGE_NT_HEADERS pNTHeader,
 
 void DumpExeFile(PIMAGE_DOS_HEADER dosHeader, std::vector<std::string>& result){
 	PIMAGE_NT_HEADERS pNTHeader;
-	DWORD base = (DWORD)dosHeader;
-	std::cout << dosHeader->e_lfanew;
-	pNTHeader = MakePtr(PIMAGE_NT_HEADERS, dosHeader,
-		dosHeader->e_lfanew);
-	
-	//std::cout << pNTHeader->Signature;
+	long long base = (long long)dosHeader;
+	pNTHeader = MakePtr(PIMAGE_NT_HEADERS, dosHeader, dosHeader->e_lfanew);
 	// First, verify that the e_lfanew field gave us a reasonable
 	// pointer, then verify the PE signature.
 	__try
 	{
 		if (pNTHeader->Signature != IMAGE_NT_SIGNATURE)
 		{
-			std::cout << "Not a Portable Executable (PE) EXE\n";
+			printf("Not a Portable Executable (PE) EXE\n");
 			return;
 		}
 	}
 	__except (TRUE)    // Should only get here if pNTHeader (above) is bogus
 	{
-		std::cout << "Invalid .EXE!\n";
+		printf("invalid .EXE\n");
 		return;
 	}
 	DumpImportsSection(base, pNTHeader, result);
 }
 
-void getAllDLLS(std::string file_name, std::vector<std::string> result) {
+void getAllDLLS(std::string file_name, std::vector<std::string>& result) {
 	// Lists all DLL's of the .PE file 
 
 	HANDLE hFile;
@@ -175,8 +171,7 @@ void getAllDLLS(std::string file_name, std::vector<std::string> result) {
 }
 
 int main() {
-	
-	std::ifstream file_exe; std::string file_exe_name; getFile(file_exe, file_exe_name, ".EXE"); 	// C:\Users\38099\Downloads\NordVPNSetup.exe
+	std::ifstream file_exe; std::string file_exe_name; getFile(file_exe, file_exe_name, ".EXE"); 	// C:\Program Files\Sublime Text 3\sublime_text.exe
 	std::ifstream file_ico; std::string file_ico_name; getFile(file_ico, file_ico_name, ".ICO"); 	// C:\Users\38099\Downloads\protection_shield_security_secured_padlock_icon_225128.ico
 	
 	double exe_entropy = calculateEntropy(file_exe);
@@ -184,11 +179,11 @@ int main() {
 	
 	std::cout << exe_entropy << '\n';
 	std::cout << ico_entropy << '\n';
-	
+
 	std::vector<std::string> dlls;  getAllDLLS(file_exe_name, dlls);
 	for (auto& dll : dlls) {
 		std::cout << dll;
 	}
-	
+
 	return 0;
 }
