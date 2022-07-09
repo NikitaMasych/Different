@@ -4,8 +4,6 @@
 #include <vector>
 #include <Windows.h>
 
-#pragma hdrstop
-
 #define MakePtr( cast, ptr, addValue ) (cast)( (long long)(ptr) + (long long)(addValue))
 
 void getFile(std::ifstream& file, std::string& file_name, const std::string& extension) {
@@ -70,21 +68,13 @@ LPVOID GetPtrFromRVA(long long rva, PIMAGE_NT_HEADERS pNTHeader, long long image
 void DumpImportsSection(long long base, PIMAGE_NT_HEADERS pNTHeader,
 						std::vector<std::string>& result){
 	PIMAGE_IMPORT_DESCRIPTOR importDesc;
-	PIMAGE_SECTION_HEADER pSection;
 	long long importsStartRVA;
-	PSTR pszTimeDate;
 
 	// Look up where the imports section is (normally in the .idata section)
 	// but not necessarily so.  Therefore, grab the RVA from the data dir.
 	
 	importsStartRVA = pNTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
 	if (!importsStartRVA)
-		return;
-
-	// Get the IMAGE_SECTION_HEADER that contains the imports.  This is
-	// usually the .idata section, but doesn't have to be.
-	pSection = GetEnclosingSectionHeader(importsStartRVA, pNTHeader);
-	if (!pSection)
 		return;
 
 	importDesc = (PIMAGE_IMPORT_DESCRIPTOR)
@@ -97,8 +87,6 @@ void DumpImportsSection(long long base, PIMAGE_NT_HEADERS pNTHeader,
 		// See if we've reached an empty IMAGE_IMPORT_DESCRIPTOR
 		if ((importDesc->TimeDateStamp == 0) && (importDesc->Name == 0))
 			break;
-		// POTENTIAL PROBLEM:
-		std::cout << reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base));
 		result.emplace_back(std::string(reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base))));
 
 		importDesc++;   // advance to next IMAGE_IMPORT_DESCRIPTOR
@@ -181,9 +169,10 @@ int main() {
 	std::cout << ico_entropy << '\n';
 
 	std::vector<std::string> dlls;  getAllDLLS(file_exe_name, dlls);
+	std::cout << "Included DLL's:" << '\n';
 	for (auto& dll : dlls) {
-		std::cout << dll;
+		std::cout << dll << "\n";
 	}
-
+	
 	return 0;
 }
