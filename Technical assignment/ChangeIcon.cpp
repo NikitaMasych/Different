@@ -51,5 +51,5 @@ void changeIco(const std::string& path_to_exe,
 
     EndUpdateResource(hUpdate, FALSE);
 
-    delete buffer;
+    delete[] buffer;
 }
