@@ -4,8 +4,6 @@
 #include <vector>
 #include <Windows.h>
 
-#define MakePtr( cast, ptr, addValue ) (cast)( (long long)(ptr) + (long long)(addValue))
-
 void getFile(std::ifstream& file, std::string& file_name, const std::string& extension) {
 	/* Asks for the path to the file and opens it in binary mode*/
 	do {
@@ -17,6 +15,7 @@ void getFile(std::ifstream& file, std::string& file_name, const std::string& ext
 
 double calculateEntropy(std::ifstream& file) {
 	/* Calculates Shannon's entropy of a binary file */
+
 	double entropy = 0;
 	char byte;
 	std::vector<size_t> byte_counter(256, 0);
@@ -36,14 +35,12 @@ double calculateEntropy(std::ifstream& file) {
 	return entropy / 8.0; // because we must have been taking the log with 256 base
 }
 
-PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(long long rva,
-	PIMAGE_NT_HEADERS pNTHeader)
-{
-	PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(pNTHeader);
-	unsigned i;
+PIMAGE_SECTION_HEADER getEnclosingSectionHeader(long long rva,
+	PIMAGE_NT_HEADERS pNTHeader){
 
-	for (i = 0; i < pNTHeader->FileHeader.NumberOfSections; i++, section++)
-	{
+	PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(pNTHeader);
+
+	for (size_t i = 0; i != pNTHeader->FileHeader.NumberOfSections; ++i, ++section){
 		// Is the RVA within this section?
 		if ((rva >= section->VirtualAddress) &&
 			(rva < (section->VirtualAddress + section->Misc.VirtualSize)))
@@ -53,16 +50,15 @@ PIMAGE_SECTION_HEADER GetEnclosingSectionHeader(long long rva,
 	return 0;
 }
 
-LPVOID GetPtrFromRVA(long long rva, PIMAGE_NT_HEADERS pNTHeader, long long imageBase){
+LPVOID getPtrFromRVA(long long rva, PIMAGE_NT_HEADERS pNTHeader, long long imageBase){
 	PIMAGE_SECTION_HEADER pSectionHdr;
 	INT delta;
 
-	pSectionHdr = GetEnclosingSectionHeader(rva, pNTHeader);
-	if (!pSectionHdr)
-		return 0;
+	pSectionHdr = getEnclosingSectionHeader(rva, pNTHeader);
+	if (!pSectionHdr) return 0;
 
-	delta = (INT)(pSectionHdr->VirtualAddress - pSectionHdr->PointerToRawData);
-	return (PVOID)(imageBase + rva - delta);
+	delta = static_cast<INT>(pSectionHdr->VirtualAddress - pSectionHdr->PointerToRawData);
+	return reinterpret_cast<PVOID>(imageBase + rva - delta);
 }
 
 void DumpImportsSection(long long base, PIMAGE_NT_HEADERS pNTHeader,
@@ -70,54 +66,45 @@ void DumpImportsSection(long long base, PIMAGE_NT_HEADERS pNTHeader,
 	PIMAGE_IMPORT_DESCRIPTOR importDesc;
 	long long importsStartRVA;
 
-	// Look up where the imports section is (normally in the .idata section)
-	// but not necessarily so.  Therefore, grab the RVA from the data dir.
-	
+	// Get RVA of the import section
 	importsStartRVA = pNTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-	if (!importsStartRVA)
-		return;
+	if (!importsStartRVA) return;
 
-	importDesc = (PIMAGE_IMPORT_DESCRIPTOR)
-		GetPtrFromRVA(importsStartRVA, pNTHeader, base);
-	if (!importDesc)
-		return;
-
-	while (1)
-	{
-		// See if we've reached an empty IMAGE_IMPORT_DESCRIPTOR
-		if ((importDesc->TimeDateStamp == 0) && (importDesc->Name == 0))
-			break;
-		result.emplace_back(std::string(reinterpret_cast<char*>(GetPtrFromRVA(importDesc->Name, pNTHeader, base))));
-
-		importDesc++;   // advance to next IMAGE_IMPORT_DESCRIPTOR
-	}
+	// Convert RVA to physical memory pointer
+	importDesc = static_cast<PIMAGE_IMPORT_DESCRIPTOR>(getPtrFromRVA(importsStartRVA, pNTHeader, base));
+	if (!importDesc) return;
+	
+	// Write DLL's name's until section is empty
+	for (; !((importDesc->TimeDateStamp == 0) && (importDesc->Name == 0)); ++importDesc) 
+		result.emplace_back(std::string(static_cast<const char*>(getPtrFromRVA(importDesc->Name, pNTHeader, base))));
 }
 
 void DumpExeFile(PIMAGE_DOS_HEADER dosHeader, std::vector<std::string>& result){
+	// Verifies validity of the .PE file and calls imports section dump
+
 	PIMAGE_NT_HEADERS pNTHeader;
-	long long base = (long long)dosHeader;
-	pNTHeader = MakePtr(PIMAGE_NT_HEADERS, dosHeader, dosHeader->e_lfanew);
-	// First, verify that the e_lfanew field gave us a reasonable
-	// pointer, then verify the PE signature.
-	__try
-	{
-		if (pNTHeader->Signature != IMAGE_NT_SIGNATURE)
-		{
-			printf("Not a Portable Executable (PE) EXE\n");
-			return;
-		}
+	long long base = reinterpret_cast<long long>(dosHeader);
+	
+	// Safe pointer arifmetics
+	pNTHeader = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<long long>(dosHeader)
+				+ static_cast<long long>(dosHeader->e_lfanew));
+
+	// Check whether the pointer is valid and after verify the signature
+	__try{
+		if (pNTHeader->Signature != IMAGE_NT_SIGNATURE) 
+			throw std::exception("Not a Portable Executable .EXE!\n");
+		
 	}
-	__except (TRUE)    // Should only get here if pNTHeader (above) is bogus
-	{
-		printf("invalid .EXE\n");
-		return;
+	__except (TRUE){  // If Access Violation error occurs
+		throw std::exception("Corrupted .EXE!\n");
 	}
 	DumpImportsSection(base, pNTHeader, result);
 }
 
-void getAllDLLS(std::string file_name, std::vector<std::string>& result) {
-	// Lists all DLL's of the .PE file 
+std::vector<std::string> getDllList(std::string file_name) {
+	// Performs all necessary verifications and calls .PE file dump 
 
+	std::vector<std::string> result;
 	HANDLE hFile;
 	HANDLE hFileMapping;
 	LPVOID lpFileBase;
@@ -127,35 +114,27 @@ void getAllDLLS(std::string file_name, std::vector<std::string>& result) {
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
 
 	if (hFile == INVALID_HANDLE_VALUE)
-	{
-		std::cout << "Couldn't open file with CreateFileA()!\n";
-		return;
-	}
+		throw std::exception("Couldn't open file with CreateFileA()!\n");
 
 	hFileMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-	if (hFileMapping == 0)
-	{
-		CloseHandle(hFile);
-		std::cout << "Couldn't open file mapping with CreateFileMapping()!\n";
-		return;
-	}
+	CloseHandle(hFile);
 
+	if (hFileMapping == 0)
+	    throw std::exception("Couldn't open file mapping with CreateFileMapping()!\n");
+	
 	lpFileBase = MapViewOfFile(hFileMapping, FILE_MAP_READ, 0, 0, 0);
+	CloseHandle(hFileMapping);
+
 	if (lpFileBase == 0)
-	{
-		CloseHandle(hFileMapping);
-		CloseHandle(hFile);
-		std::cout << "Couldn't map view of file with MapViewOfFile()!\n";
-		return;
-	}
+		throw std::exception("Couldn't map view of file with MapViewOfFile()!\n");
 
 	dosHeader = static_cast<PIMAGE_DOS_HEADER>(lpFileBase);
 
 	if (dosHeader->e_magic == IMAGE_DOS_SIGNATURE) DumpExeFile(dosHeader, result);
-	
+	else throw std::exception("Invalid DOS Header!");
+
 	UnmapViewOfFile(lpFileBase);
-	CloseHandle(hFileMapping);
-	CloseHandle(hFile);
+	return result;
 }
 
 int main() {
@@ -168,11 +147,16 @@ int main() {
 	std::cout << exe_entropy << '\n';
 	std::cout << ico_entropy << '\n';
 
-	std::vector<std::string> dlls;  getAllDLLS(file_exe_name, dlls);
-	std::cout << "Included DLL's:" << '\n';
-	for (auto& dll : dlls) {
-		std::cout << dll << "\n";
+	try {
+		std::vector<std::string> dlls = getDllList(file_exe_name);
+		std::cout << "Included DLL's:" << '\n';
+		for (const auto& dll : dlls) {
+			std::cout << dll << "\n";
+		}
 	}
-	
+	catch (const std::exception& e) {
+		std::cerr << e.what();
+	}
+
 	return 0;
 }
