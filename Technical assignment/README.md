@@ -9,3 +9,5 @@
 * Рахує інформаційну ентропію .ico файла та виводить її у консоль.
 
 ** Warning: with some .EXE files need to use x64 architecture program build, with some - x86 due to peculiarities of the .PE build **
+
+** Entropy calculation may take some time, because I didn't use external boost mmap for fast reading, regarding to the assignment specifications **
