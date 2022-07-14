@@ -47,7 +47,7 @@ double calculateEntropy(std::string path_to_file, size_t& file_size) {
 	thread_pool.reserve(processor_count);
 
 	for (size_t i = 0; i != processor_count; ++i, pos += bytes_per_section) {
-		thread_pool.emplace_back(std::thread(readPart, pos, bytes_per_section, path_to_file, ref(byte_counter)));
+		thread_pool.emplace_back(readPart, pos, bytes_per_section, path_to_file, ref(byte_counter));
 	}
 
 	for (auto& thread : thread_pool)
