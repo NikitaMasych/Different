@@ -13,6 +13,8 @@ void getFile(std::ifstream& file, std::string& path_to_file, const std::string& 
 	} while (!file.is_open() && std::cerr << "Invalid file location!\n");
 }
 
+std::mutex mtx;
+
 void readPart(size_t pos, size_t bytes_per_section, std::string path_to_file,
 	std::vector<size_t>& byte_counter) {
 
@@ -21,7 +23,7 @@ void readPart(size_t pos, size_t bytes_per_section, std::string path_to_file,
 	char byte;
 	for (; bytes_per_section != 0; --bytes_per_section) {
 		file.read(&byte, 1);
-		std::lock_guard<std::mutex> lock(std::mutex);
+		std::lock_guard<std::mutex> lock(mtx);
 		byte_counter[static_cast<uint_fast8_t>(byte)] ++;
 	}
 	file.close();
